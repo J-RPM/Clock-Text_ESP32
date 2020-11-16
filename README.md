@@ -1,0 +1,2 @@
+# Clok-Text_ESP32
+The LED display can show the time, or rotating texts of up to 255 characters. Both the operating mode and its configuration are programmed through a WiFi connection, and stored in the EEPROM memory of the ESP32 module. In this way the clock always starts in the mode in which it was last left: text mode, or clock mode.
