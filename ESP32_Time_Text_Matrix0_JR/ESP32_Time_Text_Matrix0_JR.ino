@@ -7,13 +7,23 @@
                         https://www.sensorsiot.org/
                   https://www.youtube.com/c/AndreasSpiess/
 
+                         --- Audio information ---
+                   >>> Download: Game_Audio Library <<<
+   http://www.buildlog.net/blog/wp-content/uploads/2018/02/Game_Audio.zip
+     https://www.buildlog.net/blog/2018/02/game-audio-for-the-esp32/
+
+                  >>> Download: XT_DAC_Audio Library <<<
+     https://www.xtronical.com/wp-content/uploads/2018/03/XT_DAC_Audio.zip
+ http://www.xtronical.com/basics/audio/digitised-speech-sound-esp32-playing-wavs/
+        https://www.xtronical.com/basics/audio/playing-wavs-updated/
+
                                  --- oOo ---
                                 
                               Modified by: J_RPM
                                http://j-rpm.com/
                         https://www.youtube.com/c/JRPM
-                              November of 2020
-
+                    (v1.42) With Alarm >>> March of 2021
+                  
                An OLED display is added to show the Time an Date,
                 adding some new routines and modifying others.
 
@@ -33,15 +43,22 @@
                            >>> IDE Arduino <<<
                         Model: WEMOS MINI D1 ESP32
        Add URLs: https://dl.espressif.com/dl/package_esp32_index.json
-                     https://github.com/espressif/arduino-esp32
-
+                  https://github.com/espressif/arduino-esp32
+                                
  ____________________________________________________________________________________
 */
-String HWversion = "(v1.41)"; //ROTATE 0
+String HWversion = "(v1.42)"; //ROTATE 0 with Alarm
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
 #include <time.h>
+
+#include "SoundData.h";
+#include "Game_Audio.h";
+Game_Audio_Class GameAudio(26,0); 
+Game_Audio_Wav_Class wawTone(Tone); 
+Game_Audio_Wav_Class pmDeath(pacmanDeath);
+Game_Audio_Wav_Class wavAlarm(Alarm); 
 
 #include <DNSServer.h>
 #include <WiFiManager.h>  //https://github.com/tzapu/WiFiManager
@@ -53,8 +70,28 @@ Adafruit_SSD1306 display(OLED_RESET);
 
 String CurrentTime, CurrentDate, nDay, webpage = "";
 bool display_EU = true;
+String zone1= "Spain";
+String zone2= "Japan";
+bool T_Zone2 = false;
 bool display_msg = false;
+bool on_txt = false;
 int matrix_speed = 25;
+
+// Alarm #1
+int alarm_H = 0;
+int alarm_M = 0;
+int alarm_R = 0;
+String al_H = "00";
+String al_M = "00";
+String al_R = "0";
+
+// Alarm #2
+int alarm_H2 = 0;
+int alarm_M2 = 0;
+int alarm_R2 = 0;
+String al_H2 = "00";
+String al_M2 = "00";
+String al_R2 = "0";
 
 // Turn on debug statements to the serial output
 #define DEBUG  1
@@ -90,7 +127,12 @@ bool newMessageAvailable = false;
 const char WebResponse[] = "HTTP/1.1 200 OK\nContent-Type: text/html\r\n";
 
 // Define the number of bytes you want to access (first is index 0)
-#define EEPROM_SIZE 7
+#define EEPROM_SIZE 14
+
+// Size of buffer used to capture HTTP requests
+#define REQ_BUF_SZ   60
+char HTTP_req[REQ_BUF_SZ] = {0}; // buffered HTTP request stored as null terminated string
+char req_index = 0;              // index into HTTP_req buffer
 
 ////////////////////////// MATRIX //////////////////////////////////////////////
 #define MAX_DIGITS 20
@@ -112,29 +154,20 @@ int dualChar = 0;
 int brightness = 5;  //DUTY CYCLE: 11/32
 String mDay;
 long timeConnect;
-//////////////////////////////////////////////////////////////////////////////
 
 WiFiClient client;
-const char* Timezone    = "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00";  // Choose your time zone from: https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv 
-                                                           // See below for examples
-const char* ntpServer   = "es.pool.ntp.org";               // Or, choose a time server close to you, but in most cases it's best to use pool.ntp.org to find an NTP server
-                                                           // then the NTP system decides e.g. 0.pool.ntp.org, 1.pool.ntp.org as the NTP syem tries to find  the closest available servers
-                                                           // EU "0.europe.pool.ntp.org"
-                                                           // US "0.north-america.pool.ntp.org"
-                                                           // See: https://www.ntppool.org/en/                                                           
-int  gmtOffset_sec      = 0;    // UK normal time is GMT, so GMT Offset is 0, for US (-5Hrs) is typically -18000, AU is typically (+8hrs) 28800
-int  daylightOffset_sec = 7200; // In the UK DST is +1hr or 3600-secs, other countries may use 2hrs 7200 or 30-mins 1800 or 5.5hrs 19800 Ahead of GMT use + offset behind - offset
-
 WiFiServer server(80);
 WebServer server2(80); 
 
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 void setup() {
-  
   Serial.begin(115200);
   timeConnect = millis();
- 
+
+  // Load configuration values from EEPROM memory
+  readConfig();
+
   initMAX7219();
   sendCmdAll(CMD_SHUTDOWN,1);
   sendCmdAll(CMD_INTENSITY,brightness);
@@ -160,9 +193,16 @@ void setup() {
   display.println(F("Sync..."));
   display.display();
   
-  printStringWithShift((String("  NTP Time  ")+ HWversion).c_str(), matrix_speed);
-  delay(2000);
-  
+  String msg = "  NTP "; 
+  if (T_Zone2==false) {
+    msg = msg + zone1;    
+  }else{
+    msg = msg + zone2;    
+  }
+  msg = msg + "  " + HWversion;
+  printStringWithShift(msg.c_str(), matrix_speed);
+  delay(1000);
+
   //------------------------------
   //WiFiManager intialisation. Once completed there is no need to repeat the process on the current board
   WiFiManager wifiManager;
@@ -198,56 +238,25 @@ void setup() {
   PRINT("\nUse this URL to connect -> http://",WiFi.localIP());
   PRINTS("/");
   display_ip();
+
+  // Syncronize Time and Date
   SetupTime();
   UpdateLocalTime();
-  
-  // Initialize EEPROM with predefined size
-  EEPROM.begin(EEPROM_SIZE);
+  soundEnd();
 
-  // 0 - Display Status 
-  display_EU = EEPROM.read(0);
-  PRINT("\ndisplay_EU: ",display_EU);
-
-  // 1 - Display Date  
-  display_date = EEPROM.read(1);
-  PRINT("\ndisplay_date: ",display_date);
-  
-  // 2 - Matrix Brightness  
-  brightness = EEPROM.read(2);
-  PRINT("\nbrightness: ",brightness);
-  sendCmdAll(CMD_INTENSITY,brightness);
-  
-  // 3 - Animated Time  
-  animated_time = EEPROM.read(3);
-  PRINT("\nanimated_time: ",animated_time);
-
-  // 4 - Show Seconds  
-  show_seconds = EEPROM.read(4);
-  PRINT("\nshow_seconds: ",show_seconds);
-
-  // 5 - Speed Matrix (delay)  
-  matrix_speed = EEPROM.read(5);
-  PRINT("\nEEPROM_Speed: ",matrix_speed);
-  if (matrix_speed < 10 || matrix_speed > 40) {
-    matrix_speed = 25;
-    EEPROM.write(5, matrix_speed);
-  }
-  PRINT("\nmatrix_speed: ",matrix_speed);
-
-  // 6 - Init Display whit Time/Message  
-  display_msg = EEPROM.read(6);
-  PRINT("\ndisplay_msg: ",display_msg);
-
-  // Close EEPROM    
-  EEPROM.commit();
-  EEPROM.end();
-
+  // Select mode: TIME/MESSAGE
   checkServer();
-
   curMessage[0] = newMessage[0] = '\0';
  
   // Set up first message 
-  String stringMsg = "ESP32_Time_Text_Matrix0_JR " + HWversion + " - IP: " + WiFi.localIP().toString() + "\n";
+  String stringMsg = "ESP32_Time_Text_Matrix0_JR " + HWversion + " - RTC: ";
+  if (T_Zone2 == false) {
+    stringMsg = stringMsg + zone1;    
+  }else{
+    stringMsg = stringMsg + zone2;    
+  }
+  stringMsg = stringMsg + " - IP: " + WiFi.localIP().toString() + "\n";
+  
   stringMsg.toCharArray(curMessage, BUF_SIZE);
   PRINT("\ncurMessage >>> ", curMessage);
 
@@ -257,10 +266,11 @@ void setup() {
 void loop() {
   // Wait for a client to connect and when they do process their requests
   if (display_msg == false) {server2.handleClient();}else{handleWiFi();}
+
+  // Update and refresh of the date and time on the displays
+  if (millis() % 60000) UpdateLocalTime();
  
   if (display_msg == false) {
-    // Update and refresh of the date and time on the displays
-    if (millis() % 60000) UpdateLocalTime();
     Oled_Time();
     if (display_msg == false) {server2.handleClient();}else{handleWiFi();}
     matrix_time();
@@ -277,6 +287,7 @@ void loop() {
     if (display_date == true) {
       if(millis()-clkTime > 30000 && !del && dots) { // clock for 30s, then scrolls for about 5s
         _scroll=true;
+        on_txt=true; // Window of checking Alarm  
         Oled_Time();
         printStringWithShift((String("     ")+ mDay + "           ").c_str(), matrix_speed);
         clkTime = millis();
@@ -286,8 +297,6 @@ void loop() {
   
   // Display MESSAGE
   }else {
-    // Update and refresh of the date and time on OLED display
-    if (millis() % 60000) UpdateLocalTime();
     Oled_Time();
 
     // Refresh message on matrix display
@@ -299,18 +308,147 @@ void loop() {
     if(millis()-clkTime > 2000) { 
       _scroll=true;
       Oled_Time();
+      on_txt=true; // Window of checking Alarm  
       printStringWithShift((String("     ")+ curMessage + "           ").c_str(), matrix_speed);
       clkTime = millis();
       _scroll=false;
     }
   }
 }
-//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void readConfig(){
+  // Initialize EEPROM with predefined size
+  EEPROM.begin(EEPROM_SIZE);
+
+  // 0 - Display Status 
+  display_EU = EEPROM.read(0);
+  PRINT("\ndisplay_EU: ",display_EU);
+
+  // 1 - Display Date  
+  display_date = EEPROM.read(1);
+  PRINT("\ndisplay_date: ",display_date);
+  
+  // 2 - Matrix Brightness  
+  brightness = EEPROM.read(2);
+  if (brightness < 0 || brightness > 15) {
+    brightness = 5;
+    EEPROM.write(2, brightness);
+  }
+  PRINT("\nbrightness: ",brightness);
+  sendCmdAll(CMD_INTENSITY,brightness);
+  
+  // 3 - Animated Time  
+  animated_time = EEPROM.read(3);
+  PRINT("\nanimated_time: ",animated_time);
+
+  // 4 - Show Seconds  
+  show_seconds = EEPROM.read(4);
+  PRINT("\nshow_seconds: ",show_seconds);
+
+  // 5 - Speed Matrix (delay)  
+  matrix_speed = EEPROM.read(5);
+  if (matrix_speed < 10 || matrix_speed > 40) {
+    matrix_speed = 25;
+    EEPROM.write(5, matrix_speed);
+  }
+  PRINT("\nmatrix_speed: ",matrix_speed);
+
+  // 6 - Init Display whit Time/Message  
+  display_msg = EEPROM.read(6);
+  PRINT("\ndisplay_msg: ",display_msg);
+
+  // 7 - Alarm #1 Hour  
+  alarm_H = EEPROM.read(7);
+  if (alarm_H < 0 || alarm_H > 23) {
+    alarm_H = 0;
+    EEPROM.write(7, alarm_H);
+  }
+  PRINT("\nalarm_H: ",alarm_H);
+
+  // 8 - Alarm #1 Minute  
+  alarm_M = EEPROM.read(8);
+  if (alarm_M < 0 || alarm_M > 59) {
+    alarm_M = 0;
+    EEPROM.write(8, alarm_M);
+  }
+  PRINT("\nalarm_M: ",alarm_M);
+
+  // 9 - Alarm #1 Repetitions  
+  alarm_R = EEPROM.read(9);
+  if (alarm_R < 0 || alarm_R > 8) {
+    alarm_R = 0;
+    EEPROM.write(9, alarm_R);
+  }
+  PRINT("\nalarm_R: ",alarm_R);
+
+  // 10 - Alarm #2 Hour  
+  alarm_H2 = EEPROM.read(10);
+  if (alarm_H2 < 0 || alarm_H2 > 23) {
+    alarm_H2 = 0;
+    EEPROM.write(10, alarm_H2);
+  }
+  PRINT("\nalarm_H2: ",alarm_H2);
+
+  // 11 - Alarm #2 Minute  
+  alarm_M2 = EEPROM.read(11);
+  if (alarm_M2 < 0 || alarm_M2 > 59) {
+    alarm_M2 = 0;
+    EEPROM.write(11, alarm_M2);
+  }
+  PRINT("\nalarm_M2: ",alarm_M2);
+
+  // 12 - Alarm #2 Repetitions  
+  alarm_R2 = EEPROM.read(12);
+  if (alarm_R2 < 0 || alarm_R2 > 8) {
+    alarm_R2 = 0;
+    EEPROM.write(12, alarm_R2);
+  }
+  PRINT("\nalarm_R2: ",alarm_R2);
+
+  // 13 - Time Zone
+  T_Zone2 = EEPROM.read(13);
+  PRINT("\nT_Zone2: ",T_Zone2);
+
+  // Close EEPROM    
+  EEPROM.commit();
+  EEPROM.end();
+}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Choose your time zone from: https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv 
+// See below for examples
+// Or, choose a time server close to you, but in most cases it's best to use pool.ntp.org to find an NTP server
+// then the NTP system decides e.g. 0.pool.ntp.org, 1.pool.ntp.org as the NTP syem tries to find  the closest available servers
+// EU "0.europe.pool.ntp.org"
+// US "0.north-america.pool.ntp.org"
+// See: https://www.ntppool.org/en/                                                           
+// UK normal time is GMT, so GMT Offset is 0, for US (-5Hrs) is typically -18000, AU is typically (+8hrs) 28800
+// In the UK DST is +1hr or 3600-secs, other countries may use 2hrs 7200 or 30-mins 1800 or 5.5hrs 19800 Ahead of GMT use + offset behind - offset
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 boolean SetupTime() {
+  char* Timezone;
+  char* ntpServer;
+  int gmtOffset_sec;
+  int daylightOffset_sec;
+  
+  // Select Time Zone (Spain/Japan)
+  if (T_Zone2 == false) {
+    Timezone= "CET-1CEST-2,M3.5.0/02:00:00,M10.5.0/03:00:00"; 
+    ntpServer= "es.pool.ntp.org";
+    gmtOffset_sec= 0;
+    daylightOffset_sec= 7200;
+  }else{
+    Timezone= "UTC-9";  
+    ntpServer= "ntp.nict.jp"; 
+    gmtOffset_sec= 0;
+    daylightOffset_sec= 0;
+  }
+  
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, "time.nist.gov");  // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  setenv("TZ", Timezone, 1);                                                  // setenv()adds the "TZ" variable to the environment with a value TimeZone, only used if set to 1, 0 means no change
+  setenv("TZ", Timezone, 1);                                            // setenv()adds the "TZ" variable to the environment with a value TimeZone, only used if set to 1, 0 means no change
   tzset();                                                                    // Set the TZ environment variable
-  delay(2000);
+  delay(500);
   bool TimeStatus = UpdateLocalTime();
   return TimeStatus;
 }
@@ -380,15 +518,17 @@ void Oled_Time() {
     display.print(CurrentTime.substring(8,11));
   }
   display.display();
+
+  // Load Time and check Alarms
+  h = (CurrentTime.substring(0,2)).toInt();
+  m = (CurrentTime.substring(3,5)).toInt();
+  s = (CurrentTime.substring(6,8)).toInt();
+  checkAlarm();
 }
 /////////////////////////////////////////////////////
 //------------------ MATRIX DISPLAY ---------------//
 /////////////////////////////////////////////////////
 void matrix_time() {
-  h = (CurrentTime.substring(0,2)).toInt();
-  m = (CurrentTime.substring(3,5)).toInt();
-  s = (CurrentTime.substring(6,8)).toInt();
-
   if (show_seconds == true) {
     if (animated_time == true) {
       showAnimSecClock(); //With ROTATE 90 send 1 times + delay(4)
@@ -419,11 +559,16 @@ void append_webpage_header() {
   webpage = ""; // A blank string variable to hold the web page
   webpage += "<!DOCTYPE html><html>"; 
   webpage += "<style>html { font-family:tahoma; display:inline-block; margin:0px auto; text-align:center;}";
+  
   webpage += "#mark      {border: 5px solid #316573 ; width: 1120px;} "; 
   webpage += "#header    {background-color:#C3E0E8; width:1100px; padding:10px; color:#13414E; font-size:36px;}";
   webpage += "#section   {background-color:#E6F5F9; width:1100px; padding:10px; color:#0D7693 ; font-size:14px;}";
   webpage += "#footer    {background-color:#C3E0E8; width:1100px; padding:10px; color:#13414E; font-size:24px; clear:both;}";
- 
+
+  webpage += ".content-select select::-ms-expand {display: none;}";
+  webpage += ".content-input input,.content-select select{appearance: none;-webkit-appearance: none;-moz-appearance: none;}";
+  webpage += ".content-select select{background-color:#C3E0E8; width:15%; padding:10px; color:#0D7693 ; font-size:48px ; border:6px solid rgba(0,0,0,0.2) ; border-radius: 24px;}";
+   
   webpage += ".button {box-shadow: 0px 10px 14px -7px #276873; background:linear-gradient(to bottom, #599bb3 5%, #408c99 100%);";
   webpage += "background-color:#599bb3; border-radius:8px; color:white; padding:13px 32px; display:inline-block; cursor:pointer;";
   webpage += "text-decoration:none;text-shadow:0px 1px 0px #3d768a; font-size:50px; font-weight:bold; margin:2px;}";
@@ -448,7 +593,67 @@ void append_webpage_header() {
   webpage += "<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css\"/>";
   webpage += "<html><head><title>ESP32 NTP Clock</title>";
   webpage += "</head>";
+
   webpage += "<script>";
+  /////////////////////////////////
+  webpage += "function GetAlarm()";
+  webpage += "{";
+  webpage += "  strHour = \"\";";
+  webpage += "  strMin = \"\";";
+  webpage += "  strRepe = \"\";";
+  webpage += "  nocache = \"/&nocache=\" + Math.random() * 1000000;";
+  webpage += "  var request = new XMLHttpRequest();";
+  webpage += "  var sel_hour = document.getElementById(\"selHour\");";   // get the values from the drop-down select boxes
+  webpage += "  if (sel_hour.selectedIndex > 0) {";
+  webpage += "  strHour = \"&h=\" + sel_hour.options[sel_hour.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strHour = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+
+  webpage += "  var sel_min = document.getElementById(\"selMin\");";
+  webpage += "  if (sel_min.selectedIndex > 0) {";
+  webpage += "  strMin = \"/&m=\" + sel_min.options[sel_min.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strMin = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+  
+  webpage += "  var sel_rep = document.getElementById(\"selRep\");";
+  webpage += "  if (sel_rep.selectedIndex > 0) {";
+  webpage += "  strRepe = \"/&r=\" + sel_rep.options[sel_rep.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strRepe = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+  
+  webpage += "  request.open(\"GET\", strHour + strMin + strRepe + nocache, false);";
+  webpage += "  request.send(null);";
+  webpage += "}";
+  /////////////////////////////////
+  webpage += "function GetAlarm2()";
+  webpage += "{";
+  webpage += "  strHour = \"\";";
+  webpage += "  strMin = \"\";";
+  webpage += "  strRepe = \"\";";
+  webpage += "  nocache = \"/&nocache=\" + Math.random() * 1000000;";
+  webpage += "  var request = new XMLHttpRequest();";
+  webpage += "  var sel_hour = document.getElementById(\"selHour2\");";   // get the values from the drop-down select boxes
+  webpage += "  if (sel_hour.selectedIndex > 0) {";
+  webpage += "  strHour = \"&h2=\" + sel_hour.options[sel_hour.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strHour = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+
+  webpage += "  var sel_min = document.getElementById(\"selMin2\");";
+  webpage += "  if (sel_min.selectedIndex > 0) {";
+  webpage += "  strMin = \"/&m2=\" + sel_min.options[sel_min.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strMin = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+  
+  webpage += "  var sel_rep = document.getElementById(\"selRep2\");";
+  webpage += "  if (sel_rep.selectedIndex > 0) {";
+  webpage += "  strRepe = \"/&r2=\" + sel_rep.options[sel_rep.selectedIndex].text;";
+  webpage += "  } else {";
+  webpage += "  strRepe = \"\";}";  // the first item in the drop-down box is invalid text, so clear the string
+  
+  webpage += "  request.open(\"GET\", strHour + strMin + strRepe + nocache, false);";
+  webpage += "  request.send(null);";
+  webpage += "}";
+  /////////////////////////////////
   webpage += "function SendData()";
   webpage += "{";
   webpage += "  strLine = \"\";";
@@ -467,6 +672,7 @@ void append_webpage_header() {
   webpage += "  request.open(\"GET\", strLine, false);";
   webpage += "  request.send(null);";
   webpage += "}";
+  /////////////////////////////////
   webpage += "</script>";
   webpage += "<div id=\"mark\">";
   webpage += "<div id=\"header\"><h1 class=\"animate__animated animate__flash\">NTP - Local Time Clock " + HWversion + "</h1>";
@@ -476,6 +682,39 @@ void button_Home() {
   webpage += "<p><a href=\"\\HOME\"><type=\"button\" class=\"button\">Refresh WEB</button></a></p>";
 }
 //////////////////////////////////////////////////////////////////////////////
+void WebAlarm(){
+  webpage += "<p>EU - 1# Alarm Time -> ";
+  al_H = "0" + String(alarm_H);
+  al_H = al_H.substring(al_H.length() - 2, al_H.length());
+  webpage += al_H;
+  webpage += ":";
+  al_M = "0" + String(alarm_M);
+  al_M = al_M.substring(al_M.length() - 2, al_M.length());
+  webpage += al_M;
+  if (alarm_R == 0) {
+    webpage += " (OFF";
+  }else {
+    webpage += " (R:";
+    webpage += alarm_R;
+  }
+  webpage += ")</p>";
+  //--------------------
+  webpage += "<p>EU - 2# Alarm Time -> ";
+  al_H2 = "0" + String(alarm_H2);
+  al_H2 = al_H2.substring(al_H2.length() - 2, al_H2.length());
+  webpage += al_H2;
+  webpage += ":";
+  al_M2 = "0" + String(alarm_M2);
+  al_M2 = al_M2.substring(al_M2.length() - 2, al_M2.length());
+  webpage += al_M2;
+  if (alarm_R2 == 0) {
+    webpage += " (OFF";
+  }else {
+    webpage += " (R:";
+    webpage += alarm_R2;
+  }
+  webpage += ")</p>";
+}
 //////////////////////////////////////////////////////////////////////////////
 void ESP32_set_message() {
   client = server.available();
@@ -489,40 +728,158 @@ void ESP32_set_message() {
   webpage += "</p>";
   webpage += "<p>Speed: ";
   webpage += matrix_speed;
-  webpage += " ms. delay</p></h5>";
-  webpage += "</div>";
+  webpage += " ms. delay</p>";
 
+  WebAlarm();
+  
+  webpage += "</h5></div>";
   webpage += "<div id=\"section\">";
   webpage += "<form id=\"data_form\" name=\"frmText\">";
   webpage += "<a>NEW message<br><input type=\"text\" name=\"Message\" maxlength=\"255\"><br><br>";
   webpage += "Speed (ms. delay)<br>Fast(10)<input type=\"range\" name=\"Speed\" min=\"10\" max=\"40\" value=\"";
   webpage += matrix_speed;
   webpage += "\">(40)Slow</a>";
-
   webpage += "<br><br>";
   webpage += "<p><a href=\"\"><type=\"button\" onClick=\"SendData()\" class=\"button\">Send Data</button></a></p>";
+
   webpage += "<br><hr class=\"line\"><br>";
+  insert_Alarm();
+  webpage += "<br>";
   webpage += "<p><a href=\"\\CLOCK_TOGGLE\"><type=\"button\" class=\"button\">CLOCK</button></a></p>";
   webpage += "<br></form>";
   webpage += "</div>"; 
-  webpage += "<div id=\"footer\">Copyright &copy; J_RPM 2020</div></div></html>\r\n";
+  webpage += "<div id=\"footer\">Copyright &copy; J_RPM 2021</div></div></html>\r\n";
   client.println(WebResponse);
   client.println(webpage);
   PRINTS("\n>>> ESP32_set_message() OK! ");
 }
 //////////////////////////////////////////////////////////////////////////////
+void insert_Alarm() {
+  webpage += "<div class=\"content-select\">";
+  // Alarm #1
+  webpage += "<p><select id=\"selHour\">";
+  selH();
+  webpage += "<select id=\"selMin\">";
+  selM();
+  webpage += "<select id=\"selRep\">";
+  selR();
+  webpage += "<a href=\"\"><type=\"button\" onClick=\"GetAlarm()\" class=\"button\">SAVE Alarm #1</button></a></p>";
+  // Alarm #2
+  webpage += "<p><select id=\"selHour2\">";
+  selH();
+  webpage += "<select id=\"selMin2\">";
+  selM();
+  webpage += "<select id=\"selRep2\">";
+  selR();
+  webpage += "<a href=\"\"><type=\"button\" onClick=\"GetAlarm2()\" class=\"button\">SAVE Alarm #2</button></a></p>";
+  webpage += "</div>";
+}
+//////////////////////////////////////////////////////////////////////////////
+void selH(){
+  webpage += "<option selected=\"selected\" value=\"\">HOUR</option>";
+  sel23();
+  webpage += "</select>";
+}
+//////////////////////////////////////////////////////////////////////////////
+void sel23(){
+  webpage += "<option value=\"00\">00</option>";
+  webpage += "<option value=\"01\">01</option>";
+  webpage += "<option value=\"02\">02</option>";
+  webpage += "<option value=\"03\">03</option>";
+  webpage += "<option value=\"04\">04</option>";
+  webpage += "<option value=\"05\">05</option>";
+  webpage += "<option value=\"06\">06</option>";
+  webpage += "<option value=\"07\">07</option>";
+  webpage += "<option value=\"08\">08</option>";
+  webpage += "<option value=\"09\">09</option>";
+  webpage += "<option value=\"10\">10</option>";
+  webpage += "<option value=\"11\">11</option>";
+  webpage += "<option value=\"12\">12</option>";
+  webpage += "<option value=\"13\">13</option>";
+  webpage += "<option value=\"14\">14</option>";
+  webpage += "<option value=\"15\">15</option>";
+  webpage += "<option value=\"16\">16</option>";
+  webpage += "<option value=\"17\">17</option>";
+  webpage += "<option value=\"18\">18</option>";
+  webpage += "<option value=\"19\">19</option>";
+  webpage += "<option value=\"20\">20</option>";
+  webpage += "<option value=\"21\">21</option>";
+  webpage += "<option value=\"22\">22</option>";
+  webpage += "<option value=\"23\">23</option>";
+}
+//////////////////////////////////////////////////////////////////////////////
+void selM(){
+  webpage += "<option selected=\"selected\" value=\"\">MINUTE</option>";
+  sel23();
+  webpage += "<option value=\"24\">24</option>";
+  webpage += "<option value=\"25\">25</option>";
+  webpage += "<option value=\"26\">26</option>";
+  webpage += "<option value=\"27\">27</option>";
+  webpage += "<option value=\"28\">28</option>";
+  webpage += "<option value=\"29\">29</option>";
+  webpage += "<option value=\"30\">30</option>";
+  webpage += "<option value=\"31\">31</option>";
+  webpage += "<option value=\"32\">32</option>";
+  webpage += "<option value=\"33\">33</option>";
+  webpage += "<option value=\"34\">34</option>";
+  webpage += "<option value=\"35\">35</option>";
+  webpage += "<option value=\"36\">36</option>";
+  webpage += "<option value=\"37\">37</option>";
+  webpage += "<option value=\"38\">38</option>";
+  webpage += "<option value=\"39\">39</option>";
+  webpage += "<option value=\"40\">40</option>";
+  webpage += "<option value=\"41\">41</option>";
+  webpage += "<option value=\"42\">42</option>";
+  webpage += "<option value=\"43\">43</option>";
+  webpage += "<option value=\"44\">44</option>";
+  webpage += "<option value=\"45\">45</option>";
+  webpage += "<option value=\"46\">46</option>";
+  webpage += "<option value=\"47\">47</option>";
+  webpage += "<option value=\"48\">48</option>";
+  webpage += "<option value=\"49\">49</option>";
+  webpage += "<option value=\"50\">50</option>";
+  webpage += "<option value=\"51\">51</option>";
+  webpage += "<option value=\"52\">52</option>";
+  webpage += "<option value=\"53\">53</option>";
+  webpage += "<option value=\"54\">54</option>";
+  webpage += "<option value=\"55\">55</option>";
+  webpage += "<option value=\"56\">56</option>";
+  webpage += "<option value=\"57\">57</option>";
+  webpage += "<option value=\"58\">58</option>";
+  webpage += "<option value=\"59\">59</option>";
+  webpage += "</select>";
+}
+//////////////////////////////////////////////////////////////////////////////
+void selR(){
+  webpage += "<option selected=\"selected\" value=\"\">REPETITIONS</option>";
+  webpage += "<option value=\"0\">0</option>";
+  webpage += "<option value=\"1\">1</option>";
+  webpage += "<option value=\"2\">2</option>";
+  webpage += "<option value=\"3\">3</option>";
+  webpage += "<option value=\"4\">4</option>";
+  webpage += "<option value=\"5\">5</option>";
+  webpage += "<option value=\"6\">6</option>";
+  webpage += "<option value=\"7\">7</option>";
+  webpage += "<option value=\"8\">8</option>";
+  webpage += "</select>";
+}
 //////////////////////////////////////////////////////////////////////////////
 void NTP_Clock_home_page() {
   append_webpage_header();
-  webpage += "<p><h3 class=\"animate__animated animate__fadeInLeft\">Display Mode is ";
+  //webpage += "<p><h5 class=\"animate__animated animate__fadeInLeft\">Display Mode is ";
+  webpage += "<p><h5 class=\"animate__animated animate__fadeInLeft\">RTC: ";
+  if (T_Zone2 == false) webpage += zone1; else webpage += zone2;
+  webpage += " - ";
   if (display_EU == true) webpage += "EU"; else webpage += "USA";
-  webpage += "</p>[";
+  webpage += " mode</p>[";
   if (animated_time == true) webpage += "Animated "; else webpage += "Normal ";
   if (show_seconds == true) webpage += "(hh:mm:ss) "; else webpage += "(HH:MM) ";
   if (display_date == true) webpage += "& Date ";
   webpage += "- B:";     
   webpage += brightness;
-  webpage += "]</h3></div>";
+  webpage += "]";
+  WebAlarm();
+  webpage += "</h5></div>";
 
   webpage += "<div id=\"section\">";
   button_Home();
@@ -543,10 +900,14 @@ void NTP_Clock_home_page() {
   webpage += brightness;
   webpage += "\">(15)MAX</a></form>";
   webpage += "<p><a href=\"\"><type=\"button\" onClick=\"SendBright()\" class=\"button\">Send Brightness</button></a></p>";
-
-  webpage += "<hr class=\"line\"><br>";
-  webpage += "<p><a href=\"\\RESTART\"><type=\"button\" class=\"button\">Restart ESP32</button></a></p>";
-  webpage += "<p><a href=\"\\MSG_TOGGLE\"><type=\"button\" class=\"button\">MESSAGE</button></a></p>";
+  webpage += "<hr class=\"line\">";
+  webpage += "<p><a href=\"\\RESTART_1\"><type=\"button\" class=\"button\">RTC: ";
+  webpage += zone1;
+  webpage += "</button></a>";
+  webpage += "<a href=\"\\RESTART_2\"><type=\"button\" class=\"button\">RTC: ";
+  webpage += zone2;
+  webpage += "</button></a>";
+  webpage += "<a href=\"\\MSG_TOGGLE\"><type=\"button\" class=\"button\">MESSAGE</button></a></p>";
   webpage += "<br><p><a href=\"\\RESET_WIFI\"><type=\"button\" class=\"button button2\">Reset WiFi</button></a></p>";
   webpage += "</div>";
   end_webpage();
@@ -580,7 +941,7 @@ void web_reset_ESP32() {
 }
 //////////////////////////////////////////////////////////////
 void end_webpage(){
-  webpage += "<div id=\"footer\">Copyright &copy; J_RPM 2020</div></div></html>\r\n";
+  webpage += "<div id=\"footer\">Copyright &copy; J_RPM 2021</div></div></html>\r\n";
   if (display_msg == false) {
     server2.send(200, "text/html", webpage);
   }else {
@@ -632,6 +993,48 @@ void display_matrix_speed() {
 void display_init_msg() {
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.write(6, display_msg);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Hour() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(7, alarm_H);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Minute() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(8, alarm_M);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Repe() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(9, alarm_R);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Hour2() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(10, alarm_H2);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Minute2() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(11, alarm_M2);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void alarm_Repe2() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(12, alarm_R2);
+  end_Eprom();
+}
+//////////////////////////////////////////////////////////////
+void set_Zone2() {
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.write(13, T_Zone2);
   end_Eprom();
 }
 //////////////////////////////////////////////////////////////
@@ -1114,6 +1517,20 @@ void _clock_toggle() {
   _restart();
 }
 /////////////////////////////////////////////////////////////////
+void _restart_1() {
+  T_Zone2=false;
+  PRINT("\n>>> SYNC Time: ",zone1);
+  set_Zone2();
+  _restart();
+}
+/////////////////////////////////////////////////////////////////
+void _restart_2() {
+  T_Zone2=true;
+  PRINT("\n>>> SYNC Time: ",zone2);
+  set_Zone2();
+  _restart();
+}
+/////////////////////////////////////////////////////////////////
 void _restart() {
   PRINTS("\n-> RESTART");
   web_reset_ESP32();
@@ -1146,7 +1563,9 @@ void checkServer(){
   }else {
     server2.begin();  // Start the WebServer
     PRINTS("\nWebServer started");
+    ////////////////////////////////////////////////////////////////////////
     // Define what happens when a client requests attention
+    ////////////////////////////////////////////////////////////////////////
     server2.on("/", _home);
     server2.on("/DISPLAY_MODE_USA", _display_mode_usa); 
     server2.on("/DISPLAY_MODE_EU", _display_mode_eu); 
@@ -1175,7 +1594,8 @@ void checkServer(){
     server2.on("/BRIGHT=14", _bright_14); 
     server2.on("/BRIGHT=15", _bright_15); 
     server2.on("/HOME", _home);
-    server2.on("/RESTART", _restart);  
+    server2.on("/RESTART_1", _restart_1);  
+    server2.on("/RESTART_2", _restart_2);  
     server2.on("/RESET_WIFI", _reset_wifi);
   }
 }
@@ -1193,6 +1613,129 @@ void getData(char *szMesg, uint16_t len) {
     _clock_toggle();
     return; 
   }
+
+  ///////////////////////////////////////////////////////////////////////
+  // Check Alarm #1 time and repetitions
+  // Recv: GET /&h=12/&nocache=37153.378554600546 HTTP/1.1
+  // Recv: GET /&m=20/&nocache=831747.823437562 HTTP/1.1
+  // Recv: GET /&r=2/&nocache=311662.6675125849 HTTP/1.1
+  // Recv: GET /&h=10/&m=30/&r=5/&nocache=11583.322345389835 HTTP/1.1
+  ///////////////////////////////////////////////////////////////////////
+  // Alarm HOUR #1
+  pStart = strstr(szMesg, "/&h=");
+  if (pStart != NULL){
+    char *pH = newMessage;
+    pStart += 4;  // Skip to start of Hour
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pH++ = *pStart++;
+      }
+      *pH = '\0'; // terminate the string
+      al_H = String(newMessage);
+      alarm_H = al_H.toInt();
+      alarm_Hour();
+      PRINT("\n-> 1# Alarm HOUR: ",al_H);
+    }  
+  }
+  
+  // Alarm MINUTE #1
+  pStart = strstr(szMesg, "/&m=");
+  if (pStart != NULL){
+    char *pM = newMessage;
+    pStart += 4;  // Skip to start of Minute
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pM++ = *pStart++;
+      }
+      *pM = '\0'; // terminate the string
+      al_M = String(newMessage);
+      alarm_M = al_M.toInt();
+      alarm_Minute();
+      PRINT("\n-> 1# Alarm MINUTE: ",al_M);
+    }  
+  }
+
+  // Alarm REPETITIONS #1
+  pStart = strstr(szMesg, "/&r=");
+  if (pStart != NULL){
+    char *pR = newMessage;
+    pStart += 4;  // Skip to start of Minute
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pR++ = *pStart++;
+      }
+      *pR = '\0'; // terminate the string
+      al_R = String(newMessage);
+      alarm_R = al_R.toInt();
+      alarm_Repe();
+      PRINT("\n-> 1# Alarm REPETITIONS: ",al_R);
+    }  
+  }
+
+  ///////////////////////////////////////////////////////////////////////
+  // Check Alarm #2 time and repetitions
+  // Recv: GET /&h2=12/&nocache=37153.378554600546 HTTP/1.1
+  // Recv: GET /&m2=20/&nocache=831747.823437562 HTTP/1.1
+  // Recv: GET /&r2=2/&nocache=311662.6675125849 HTTP/1.1
+  // Recv: GET /&h2=10/&m2=30/&r2=5/&nocache=11583.322345389835 HTTP/1.1
+  ///////////////////////////////////////////////////////////////////////
+  // Alarm HOUR #2
+  pStart = strstr(szMesg, "/&h2=");
+  if (pStart != NULL){
+    char *pH = newMessage;
+    pStart += 5;  // Skip to start of Hour
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pH++ = *pStart++;
+      }
+      *pH = '\0'; // terminate the string
+      al_H2 = String(newMessage);
+      alarm_H2 = al_H2.toInt();
+      alarm_Hour2();
+      PRINT("\n-> 2# Alarm HOUR: ",al_H2);
+    }  
+  }
+  
+  // Alarm MINUTE #2
+  pStart = strstr(szMesg, "/&m2=");
+  if (pStart != NULL){
+    char *pM = newMessage;
+    pStart += 5;  // Skip to start of Minute
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pM++ = *pStart++;
+      }
+      *pM = '\0'; // terminate the string
+      al_M2 = String(newMessage);
+      alarm_M2 = al_M2.toInt();
+      alarm_Minute2();
+      PRINT("\n-> 2# Alarm MINUTE: ",al_M2);
+    }  
+  }
+
+  // Alarm REPETITIONS #2
+  pStart = strstr(szMesg, "/&r2=");
+  if (pStart != NULL){
+    char *pR = newMessage;
+    pStart += 5;  // Skip to start of Minute
+    pEnd = strstr(pStart, "/&");
+    if (pEnd != NULL) {
+      while (pStart != pEnd) {
+        *pR++ = *pStart++;
+      }
+      *pR = '\0'; // terminate the string
+      al_R2 = String(newMessage);
+      alarm_R2 = al_R2.toInt();
+      alarm_Repe2();
+      PRINT("\n-> 2# Alarm REPETITIONS: ",al_R2);
+    }  
+  }
+
   /////////////////////////////////////////////////
   // Check text message
   // Message may contain data for:
@@ -1315,6 +1858,66 @@ void handleWiFi(void) {
 
   default:  state = S_IDLE;
   }
+}
+/////////////////////////////////////////////////////////////////
+void checkAlarm(){
+  int myH;
+  //Convert to EU time for alarm
+  String modT = CurrentTime.substring(9,10);
+  if (modT == "P" && h!=12) {
+    myH=h+12;
+  }else if (modT == "A" && h==12) {
+    myH=0;
+  }else {
+    myH=h;
+  }
+  //PRINT("\nTime: ", CurrentTime + " -> EU:" + myH + " s:" + String(s) + " - " + on_txt);
+ 
+  // Alarm #1
+  if (alarm_R > 0 && myH == alarm_H && m == alarm_M) {
+    // on_txt: window of checking Alarm
+    if ((on_txt==true && s < 30)||(s == 0)){
+      soundAlarm(alarm_R);
+    }
+  // Alarm #2
+  }else if (alarm_R2 > 0 && myH == alarm_H2 && m == alarm_M2) {
+    // on_txt: window of checking Alarm
+    if ((on_txt==true && s < 30)||(s == 0)){
+      soundAlarm(alarm_R2);
+    }
+  }
+  on_txt=false; 
+}
+/////////////////////////////////////////////////////////////////
+void soundAlarm(int n){
+  on_txt=false; 
+  showSimpleClock();
+  for (int i = 0; i < n; i++) {
+    PRINT("\nAlarm: ", String(i+1) + " of " + String(n));
+    sendCmdAll(CMD_INTENSITY,15);
+    GameAudio.PlayWav(&wawTone, false, 1.0);
+    // wait until done
+    while(GameAudio.IsPlaying()){ }
+    sendCmdAll(CMD_INTENSITY,0);
+    delay(400);
+    sendCmdAll(CMD_INTENSITY,15);
+    GameAudio.PlayWav(&wavAlarm, false, 1.0);
+    // wait until done
+    while(GameAudio.IsPlaying()){ }
+    sendCmdAll(CMD_INTENSITY,0);
+    delay(600);
+  }
+  soundEnd();
+}
+/////////////////////////////////////////////////////////////////
+void soundEnd(){
+  PRINT("\nRestart, repetitions of alarms #1:" , String(alarm_R) + " - 2#:" + String(alarm_R2));
+  sendCmdAll(CMD_INTENSITY,15);
+  GameAudio.PlayWav(&pmDeath, false, 1.0);
+  // wait until done
+  while(GameAudio.IsPlaying()){ }
+  sendCmdAll(CMD_INTENSITY,brightness);
+  clkTime = millis();
 }
 ////////////////////////// END //////////////////////////////////
 /////////////////////////////////////////////////////////////////
