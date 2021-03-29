@@ -22,7 +22,9 @@
                               Modified by: J_RPM
                                http://j-rpm.com/
                         https://www.youtube.com/c/JRPM
-                    (v1.42) With Alarm >>> March of 2021
+                (v1.44) Two time zones, 2 alarms, voice prompts
+                UTF-8 Spanish characters and Pac-Man animations
+                              >>> March of 2021 <<<
                   
                An OLED display is added to show the Time an Date,
                 adding some new routines and modifying others.
@@ -34,7 +36,7 @@
             HW-699 0.66 inch OLED display module, for D1 Mini (64x48)
                https://es.aliexpress.com/item/4000504485892.html
 
-             4x Módulos de Control de pantalla Led 8x8 MAX7219 (ROTATE 0)
+             4x Led Display Control Modules 8x8 MAX7219 (ROTATE 0)
                 https://es.aliexpress.com/item/33038259447.html
 
             8x8 MAX7219 Led Control Module, 4 in one screen  (ROTATE 90)
@@ -47,18 +49,37 @@
                                 
  ____________________________________________________________________________________
 */
-String HWversion = "(v1.42)"; //ROTATE 0 with Alarm
+///////////////////////////////////////////////////////////
+// ROTATE 0 >>> Two time zones, 2 alarms, voice prompts  //
+//    UTF-8 Spanish characters and Pac-Man animations    //
+///////////////////////////////////////////////////////////
+String HWversion = "(v1.44)"; 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
 #include <time.h>
-
-#include "SoundData.h";
 #include "Game_Audio.h";
+#include "SoundData.h";
+
 Game_Audio_Class GameAudio(26,0); 
+Game_Audio_Wav_Class waw0(w0); 
+Game_Audio_Wav_Class waw1(w1); 
+Game_Audio_Wav_Class waw2(w2); 
+Game_Audio_Wav_Class waw3(w3); 
+Game_Audio_Wav_Class waw4(w4); 
+Game_Audio_Wav_Class waw5(w5); 
+Game_Audio_Wav_Class waw6(w6); 
+Game_Audio_Wav_Class waw7(w7); 
+Game_Audio_Wav_Class waw8(w8); 
+Game_Audio_Wav_Class waw9(w9); 
+Game_Audio_Wav_Class wawMin(Minutos); 
+Game_Audio_Wav_Class wawHor(Horas); 
+Game_Audio_Wav_Class wawSon(sonLas); 
 Game_Audio_Wav_Class wawTone(Tone); 
+Game_Audio_Wav_Class pmEat(Eating); 
 Game_Audio_Wav_Class pmDeath(pacmanDeath);
-Game_Audio_Wav_Class wavAlarm(Alarm); 
+Game_Audio_Wav_Class wawIP(wIP);
+Game_Audio_Wav_Class wawPunto(wPunto);
 
 #include <DNSServer.h>
 #include <WiFiManager.h>  //https://github.com/tzapu/WiFiManager
@@ -70,11 +91,13 @@ Adafruit_SSD1306 display(OLED_RESET);
 
 String CurrentTime, CurrentDate, nDay, webpage = "";
 bool display_EU = true;
-String zone1= "Spain";
+String zone1= "España";
 String zone2= "Japan";
 bool T_Zone2 = false;
 bool display_msg = false;
 bool on_txt = false;
+bool pac = false;
+bool sTime = false;
 int matrix_speed = 25;
 
 // Alarm #1
@@ -84,6 +107,7 @@ int alarm_R = 0;
 String al_H = "00";
 String al_M = "00";
 String al_R = "0";
+bool chgA1 = false;
 
 // Alarm #2
 int alarm_H2 = 0;
@@ -92,6 +116,7 @@ int alarm_R2 = 0;
 String al_H2 = "00";
 String al_M2 = "00";
 String al_R2 = "0";
+bool chgA2 = false;
 
 // Turn on debug statements to the serial output
 #define DEBUG  1
@@ -117,7 +142,7 @@ String al_R2 = "0";
 
 #define NUM_MAX 4
 #include "max7219.h"
-#include "fonts.h"
+#include "fonts_es.h"
 
 // Global message buffers shared by Wifi and Scrolling functions
 #define BUF_SIZE  512
@@ -171,12 +196,8 @@ void setup() {
   initMAX7219();
   sendCmdAll(CMD_SHUTDOWN,1);
   sendCmdAll(CMD_INTENSITY,brightness);
-
-  // Test MATRIX
-  sendCmdAll(CMD_DISPLAYTEST, 1);
-  delay(500);
   sendCmdAll(CMD_DISPLAYTEST, 0);
- 
+
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 64x48)
   display.setTextColor(WHITE);
   display.clearDisplay();
@@ -221,7 +242,7 @@ void setup() {
   if (!wifiManager.autoConnect("ESP32_AP")) {
     PRINTS("\nFailed to connect and timeout occurred");
     display_AP_wifi();
-    display_flash();
+    display_flash(false);
     reset_ESP32();
   }
   // At this stage the WiFi manager will have successfully connected to a network,
@@ -237,12 +258,12 @@ void setup() {
   // Print the IP address
   PRINT("\nUse this URL to connect -> http://",WiFi.localIP());
   PRINTS("/");
+  GameAudio.PlayWav(&wawTone, false, 1.0);
   display_ip();
+  playIP();
 
   // Syncronize Time and Date
   SetupTime();
-  UpdateLocalTime();
-  soundEnd();
 
   // Select mode: TIME/MESSAGE
   checkServer();
@@ -260,6 +281,9 @@ void setup() {
   stringMsg.toCharArray(curMessage, BUF_SIZE);
   PRINT("\ncurMessage >>> ", curMessage);
 
+  soundTime();
+  delay(400);
+  soundEnd();
 }
 //////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////
@@ -269,23 +293,24 @@ void loop() {
 
   // Update and refresh of the date and time on the displays
   if (millis() % 60000) UpdateLocalTime();
+
+  Oled_Time();
+  on_txt=false;
+  matrix_time();
+
+  // Serial display time and date & dots flashing
+  if(millis()-dotTime > 500) {
+    //PRINT("\n",CurrentTime);
+    //PRINT("\n",mDay);
+    dotTime = millis();
+    dots = !dots;
+  }
  
   if (display_msg == false) {
-    Oled_Time();
-    if (display_msg == false) {server2.handleClient();}else{handleWiFi();}
-    matrix_time();
- 
-    // Serial display time and date & dots flashing
-    if(millis()-dotTime > 500) {
-      //PRINT("\n",CurrentTime);
-      //PRINT("\n",mDay);
-      dotTime = millis();
-      dots = !dots;
-    }
     
     // Show date on matrix display
     if (display_date == true) {
-      if(millis()-clkTime > 30000 && !del && dots) { // clock for 30s, then scrolls for about 5s
+      if(millis()-clkTime > 30000 && !del && dots) { // clock for 30s, then scrolls Date 
         _scroll=true;
         on_txt=true; // Window of checking Alarm  
         Oled_Time();
@@ -297,7 +322,6 @@ void loop() {
   
   // Display MESSAGE
   }else {
-    Oled_Time();
 
     // Refresh message on matrix display
     if (newMessageAvailable) {
@@ -305,10 +329,10 @@ void loop() {
       newMessageAvailable = false;
     }
 
-    if(millis()-clkTime > 2000) { 
+    if(millis()-clkTime > 30000 && !del && dots) { // clock for 30s, then scrolls personal message
       _scroll=true;
-      Oled_Time();
       on_txt=true; // Window of checking Alarm  
+      Oled_Time();
       printStringWithShift((String("     ")+ curMessage + "           ").c_str(), matrix_speed);
       clkTime = millis();
       _scroll=false;
@@ -448,7 +472,7 @@ boolean SetupTime() {
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer, "time.nist.gov");  // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   setenv("TZ", Timezone, 1);                                            // setenv()adds the "TZ" variable to the environment with a value TimeZone, only used if set to 1, 0 means no change
   tzset();                                                                    // Set the TZ environment variable
-  delay(500);
+  delay(1000);
   bool TimeStatus = UpdateLocalTime();
   return TimeStatus;
 }
@@ -459,15 +483,35 @@ boolean UpdateLocalTime() {
   time(&now);
 
   //See http://www.cplusplus.com/reference/ctime/strftime/
+  // %w >>> Weekday as a decimal number with Sunday as 0 (0-6)
+  String esWDay[7] = {"Domingo","Lunes","Martes","Miércoles","Jueves","Viernes","Sábado"};
+  String esMonth[13] = {"Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"};
+  String esDate;
   char output[30];
-  strftime(output, 30, "%A", localtime(&now));
-  nDay = output;
-  mDay = nDay;
-  nDay = (nDay.substring(0,3)) + ". ";
+  
+  if (T_Zone2 == false && display_EU == true) {
+    strftime(output, 30, "%w", localtime(&now));
+    mDay = esWDay[atoi(output)];
+  }else {
+    strftime(output, 30, "%A", localtime(&now));
+    mDay = output;
+  }
+  strftime(output, 30, "%a. ", localtime(&now));
+  nDay = output; 
+  
   if (display_EU == true) {
     strftime(output, 30,"%d-%m", localtime(&now));
     CurrentDate = nDay + output;
-    strftime(output, 30,", %d %B %Y", localtime(&now));
+    //%m  Month as a decimal number (01-12)
+    if (T_Zone2 == false) {
+      strftime(output, 30,", %d", localtime(&now));
+      esDate = mDay + output;
+      strftime(output, 30,"%m", localtime(&now));
+      mDay = esDate + " de " + esMonth[atoi(output)-1];
+      strftime(output, 30," de %Y", localtime(&now));
+    }else {
+      strftime(output, 30,", %d %B %Y", localtime(&now));
+    }
     mDay = mDay + output;
     strftime(output, 30, "%H:%M:%S", localtime(&now));
     CurrentTime = output;
@@ -558,6 +602,7 @@ void append_webpage_header() {
   // webpage is a global variable
   webpage = ""; // A blank string variable to hold the web page
   webpage += "<!DOCTYPE html><html>"; 
+  webpage += "<meta charset=\"utf-8\">";
   webpage += "<style>html { font-family:tahoma; display:inline-block; margin:0px auto; text-align:center;}";
   
   webpage += "#mark      {border: 5px solid #316573 ; width: 1120px;} "; 
@@ -682,14 +727,19 @@ void button_Home() {
   webpage += "<p><a href=\"\\HOME\"><type=\"button\" class=\"button\">Refresh WEB</button></a></p>";
 }
 //////////////////////////////////////////////////////////////////////////////
+const String format2(int num){
+  String f2 = String(num);
+  f2 = "0" + f2;
+  f2 = f2.substring(f2.length() - 2, f2.length());
+  return f2;
+}
+//////////////////////////////////////////////////////////////////////////////
 void WebAlarm(){
   webpage += "<p>EU - 1# Alarm Time -> ";
-  al_H = "0" + String(alarm_H);
-  al_H = al_H.substring(al_H.length() - 2, al_H.length());
+  al_H = format2(alarm_H);
   webpage += al_H;
   webpage += ":";
-  al_M = "0" + String(alarm_M);
-  al_M = al_M.substring(al_M.length() - 2, al_M.length());
+  al_M = format2(alarm_M);
   webpage += al_M;
   if (alarm_R == 0) {
     webpage += " (OFF";
@@ -700,12 +750,10 @@ void WebAlarm(){
   webpage += ")</p>";
   //--------------------
   webpage += "<p>EU - 2# Alarm Time -> ";
-  al_H2 = "0" + String(alarm_H2);
-  al_H2 = al_H2.substring(al_H2.length() - 2, al_H2.length());
+  al_H2 = format2(alarm_H2);
   webpage += al_H2;
   webpage += ":";
-  al_M2 = "0" + String(alarm_M2);
-  al_M2 = al_M2.substring(al_M2.length() - 2, al_M2.length());
+  al_M2 = format2(alarm_M2);
   webpage += al_M2;
   if (alarm_R2 == 0) {
     webpage += " (OFF";
@@ -740,18 +788,25 @@ void ESP32_set_message() {
   webpage += matrix_speed;
   webpage += "\">(40)Slow</a>";
   webpage += "<br><br>";
-  webpage += "<p><a href=\"\"><type=\"button\" onClick=\"SendData()\" class=\"button\">Send Data</button></a></p>";
+  webpage += "<p><a href=\"\\SendData\"><type=\"button\" onClick=\"SendData()\" class=\"button\">Send Data</button></a></p>";
 
   webpage += "<br><hr class=\"line\"><br>";
   insert_Alarm();
-  webpage += "<br>";
-  webpage += "<p><a href=\"\\CLOCK_TOGGLE\"><type=\"button\" class=\"button\">CLOCK</button></a></p>";
+  webpage += "<br><p>";
+  button_PacMan();
+  webpage += "<a href=\"\\Sound_Time\"><type=\"button\" class=\"button\">Sound TIME</button></a>";
+  webpage += "<a href=\"\\CLOCK_TOGGLE\"><type=\"button\" class=\"button\">CLOCK</button></a></p>";
+  
   webpage += "<br></form>";
   webpage += "</div>"; 
   webpage += "<div id=\"footer\">Copyright &copy; J_RPM 2021</div></div></html>\r\n";
   client.println(WebResponse);
   client.println(webpage);
   PRINTS("\n>>> ESP32_set_message() OK! ");
+}
+//////////////////////////////////////////////////////////////////////////////
+void button_PacMan() {
+  webpage += "<a href=\"\\sPAC\"><type=\"button\" class=\"button\">Pac-Man</button></a>";
 }
 //////////////////////////////////////////////////////////////////////////////
 void insert_Alarm() {
@@ -763,7 +818,7 @@ void insert_Alarm() {
   selM();
   webpage += "<select id=\"selRep\">";
   selR();
-  webpage += "<a href=\"\"><type=\"button\" onClick=\"GetAlarm()\" class=\"button\">SAVE Alarm #1</button></a></p>";
+  webpage += "<a href=\"\\Alarm1\"><type=\"button\" onClick=\"GetAlarm()\" class=\"button\">SAVE Alarm #1</button></a></p>";
   // Alarm #2
   webpage += "<p><select id=\"selHour2\">";
   selH();
@@ -771,7 +826,7 @@ void insert_Alarm() {
   selM();
   webpage += "<select id=\"selRep2\">";
   selR();
-  webpage += "<a href=\"\"><type=\"button\" onClick=\"GetAlarm2()\" class=\"button\">SAVE Alarm #2</button></a></p>";
+  webpage += "<a href=\"\\Alarm2\"><type=\"button\" onClick=\"GetAlarm2()\" class=\"button\">SAVE Alarm #2</button></a></p>";
   webpage += "</div>";
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -884,12 +939,14 @@ void NTP_Clock_home_page() {
   webpage += "<div id=\"section\">";
   button_Home();
   webpage += "<p><a href=\"\\DISPLAY_MODE_USA\"><type=\"button\" class=\"button\">USA mode</button></a>";
-  webpage += "<a href=\"\\DISPLAY_MODE_EU\"><type=\"button\" class=\"button\">EU mode</button></a></p>";
+  webpage += "<a href=\"\\DISPLAY_MODE_EU\"><type=\"button\" class=\"button\">EU mode</button></a></p><p>";
 
-  webpage += "<p><a href=\"\\TIME_ANIM\"><type=\"button\" class=\"button\">Animated Time</button></a>";
+  button_PacMan();
+  webpage += "<a href=\"\\TIME_ANIM\"><type=\"button\" class=\"button\">Animated Time</button></a>";
   webpage += "<a href=\"\\TIME_NORMAL\"><type=\"button\" class=\"button\">Normal Time</button></a></p>";
 
-  webpage += "<p><a href=\"\\TIME_MINUTE\"><type=\"button\" class=\"button\">HH:MM</button></a>";
+  webpage += "<p><a href=\"\\SOUND\"><type=\"button\" class=\"button\">Sound TIME</button></a>";
+  webpage += "<a href=\"\\TIME_MINUTE\"><type=\"button\" class=\"button\">HH:MM</button></a>";
   webpage += "<a href=\"\\TIME_SECOND\"><type=\"button\" class=\"button\">hh:mm:ss</button></a></p>";
 
   webpage += "<p><a href=\"\\DISPLAY_DATE\"><type=\"button\" class=\"button\">Show Date</button></a>";
@@ -1066,16 +1123,18 @@ void display_AP_wifi () {
   display.display();
 }
 //////////////////////////////////////////////////////////////
-void display_flash() {
+void display_flash(bool tst) {
   for (int i=0; i<8; i++) {
+    if (tst==true)sendCmdAll(CMD_DISPLAYTEST, 1);
     display.invertDisplay(true);
     display.display();
     sendCmdAll(CMD_SHUTDOWN,0);
-    delay (150);
+    delay (50);
     display.invertDisplay(false);
     display.display();
+    sendCmdAll(CMD_DISPLAYTEST, 0);
     sendCmdAll(CMD_SHUTDOWN,1);
-    delay (150);
+    delay (50);
   }
 }
 //////////////////////////////////////////////////////////////
@@ -1094,7 +1153,8 @@ void display_ip() {
   display.print(WiFi.localIP());
   display.println("/");
   display.display();
-  display_flash();
+  GameAudio.PlayWav(&wawIP, false, 1.0);
+  display_flash(false);
 }
 //////////////////////////////////////////////////////////////////////////////
 void showSimpleClock(){
@@ -1237,56 +1297,54 @@ int showChar(char ch, const uint8_t *data){
   return w;
 }
 //////////////////////////////////////////////////////////////////////////////
-unsigned char convertPolish(unsigned char _c){
+unsigned char convertSpanish(unsigned char _c){
   unsigned char c = _c;
-  if(c==196 || c==197 || c==195) {
+  if(c==195) {
     dualChar = c;
     return 0;
   }
+  // UTF8
   if(dualChar) {
     switch(_c) {
-      case 133: c = 1+'~'; break; // 'ą'
-      case 135: c = 2+'~'; break; // 'ć'
-      case 153: c = 3+'~'; break; // 'ę'
-      case 130: c = 4+'~'; break; // 'ł'
-      case 132: c = dualChar==197 ? 5+'~' : 10+'~'; break; // 'ń' and 'Ą'
-      case 179: c = 6+'~'; break; // 'ó'
-      case 155: c = 7+'~'; break; // 'ś'
-      case 186: c = 8+'~'; break; // 'ź'
-      case 188: c = 9+'~'; break; // 'ż'
-      //case 132: c = 10+'~'; break; // 'Ą'
-      case 134: c = 11+'~'; break; // 'Ć'
-      case 152: c = 12+'~'; break; // 'Ę'
-      case 129: c = 13+'~'; break; // 'Ł'
-      case 131: c = 14+'~'; break; // 'Ń'
-      case 147: c = 15+'~'; break; // 'Ó'
-      case 154: c = 16+'~'; break; // 'Ś'
-      case 185: c = 17+'~'; break; // 'Ź'
-      case 187: c = 18+'~'; break; // 'Ż'
+      case 161: c = 1+'~'; break;   // 'á'
+      case 169: c = 2+'~'; break;   // 'é'
+      case 173: c = 3+'~'; break;   // 'í'
+      case 179: c = 4+'~'; break;   // 'ó'
+      case 186: c = 5+'~'; break;   // 'ú'
+      case 188: c = 6+'~'; break;   // 'ü'
+      case 156: c = 7+'~'; break;   // 'Ü'
+      case 177: c = 8+'~'; break;   // 'ñ'
+      case 145: c = 9+'~'; break;   // 'Ñ'
+      case 167: c = 10+'~'; break;  // 'ç'
+      case 135: c = 11+'~'; break;  // 'Ç'
+      case 129: c = 12+'~'; break;  // 'Á'
+      case 137: c = 13+'~'; break;  // 'É'
+      case 141: c = 14+'~'; break;  // 'Í'
+      case 147: c = 15+'~'; break;  // 'Ó'
+      case 154: c = 16+'~'; break;  // 'Ú'
       default:  break;
     }
     dualChar = 0;
     return c;
   }    
+  // ANSI
   switch(_c) {
-    case 185: c = 1+'~'; break;
-    case 230: c = 2+'~'; break;
-    case 234: c = 3+'~'; break;
-    case 179: c = 4+'~'; break;
-    case 241: c = 5+'~'; break;
-    case 243: c = 6+'~'; break;
-    case 156: c = 7+'~'; break;
-    case 159: c = 8+'~'; break;
-    case 191: c = 9+'~'; break;
-    case 165: c = 10+'~'; break;
-    case 198: c = 11+'~'; break;
-    case 202: c = 12+'~'; break;
-    case 163: c = 13+'~'; break;
-    case 209: c = 14+'~'; break;
-    case 211: c = 15+'~'; break;
-    case 140: c = 16+'~'; break;
-    case 143: c = 17+'~'; break;
-    case 175: c = 18+'~'; break;
+    case 225: c = 1+'~'; break;   // 'á'
+    case 233: c = 2+'~'; break;   // 'é'
+    case 237: c = 3+'~'; break;   // 'í'
+    case 243: c = 4+'~'; break;   // 'ó'
+    case 250: c = 5+'~'; break;   // 'ú'
+    case 252: c = 6+'~'; break;   // 'ü'
+    case 220: c = 7+'~'; break;   // 'Ü'
+    case 241: c = 8+'~'; break;   // 'ñ'
+    case 209: c = 9+'~'; break;   // 'Ñ'
+    case 231: c = 10+'~'; break;  // 'ç'
+    case 199: c = 11+'~'; break;  // 'Ç'
+    case 193: c = 12+'~'; break;  // 'Á'
+    case 201: c = 13+'~'; break;  // 'É'
+    case 205: c = 14+'~'; break;  // 'Í'
+    case 211: c = 15+'~'; break;  // 'Ó'
+    case 218: c = 16+'~'; break;  // 'Ú'
     default:  break;
   }
   return c;
@@ -1296,8 +1354,8 @@ void printCharWithShift(unsigned char c, int shiftDelay) {
   // To check WiFi inputs faster 
   shiftDelay = shiftDelay / 4;
   
-  c = convertPolish(c);
-  if (c < ' ' || c > '~'+25) return;
+  c = convertSpanish(c);
+  if (c < ' ' || c > '~'+23) return;
   c -= 32;
   int w = showChar(c, font);
   for (int i=0; i<w+1; i++) {
@@ -1546,6 +1604,20 @@ void _home() {
   responseWeb();
 }
 /////////////////////////////////////////////////////////////////
+void _pacman() {
+  if (pac==false) responseWeb();
+  _scroll=true;
+  soundEnd();
+  delay(400);
+}
+/////////////////////////////////////////////////////////////////
+void _sound() {
+  if (sTime==false) responseWeb();
+  soundTime();
+  delay(400);
+  soundEnd();
+}
+/////////////////////////////////////////////////////////////////
 void responseWeb(){
   PRINTS("\nS_RESPONSE");
   if (display_msg == false) {
@@ -1594,6 +1666,8 @@ void checkServer(){
     server2.on("/BRIGHT=14", _bright_14); 
     server2.on("/BRIGHT=15", _bright_15); 
     server2.on("/HOME", _home);
+    server2.on("/sPAC", _pacman);
+    server2.on("/SOUND", _sound);
     server2.on("/RESTART_1", _restart_1);  
     server2.on("/RESTART_2", _restart_2);  
     server2.on("/RESET_WIFI", _reset_wifi);
@@ -1607,6 +1681,18 @@ void getData(char *szMesg, uint16_t len) {
   // Check clock config
   ////////////////////////////////////////////////
 
+  //-----------------------------------------------
+  pStart = strstr(szMesg, "sPAC");
+  if (pStart != NULL) {
+    pac=true;
+    return; 
+  }
+  //-----------------------------------------------
+  pStart = strstr(szMesg, "Sound_Time");
+  if (pStart != NULL) {
+    sTime=true;
+    return; 
+  }
   //-----------------------------------------------
   pStart = strstr(szMesg, "CLOCK_TOGGLE");
   if (pStart != NULL) {
@@ -1636,6 +1722,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_H = al_H.toInt();
       alarm_Hour();
       PRINT("\n-> 1# Alarm HOUR: ",al_H);
+      chgA1 = true;
     }  
   }
   
@@ -1654,6 +1741,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_M = al_M.toInt();
       alarm_Minute();
       PRINT("\n-> 1# Alarm MINUTE: ",al_M);
+      chgA1 = true;
     }  
   }
 
@@ -1672,6 +1760,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_R = al_R.toInt();
       alarm_Repe();
       PRINT("\n-> 1# Alarm REPETITIONS: ",al_R);
+      chgA1 = true;
     }  
   }
 
@@ -1697,6 +1786,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_H2 = al_H2.toInt();
       alarm_Hour2();
       PRINT("\n-> 2# Alarm HOUR: ",al_H2);
+      chgA2 = true;
     }  
   }
   
@@ -1715,6 +1805,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_M2 = al_M2.toInt();
       alarm_Minute2();
       PRINT("\n-> 2# Alarm MINUTE: ",al_M2);
+      chgA2 = true;
     }  
   }
 
@@ -1733,6 +1824,7 @@ void getData(char *szMesg, uint16_t len) {
       alarm_R2 = al_R2.toInt();
       alarm_Repe2();
       PRINT("\n-> 2# Alarm REPETITIONS: ",al_R2);
+      chgA2 = true;
     }  
   }
 
@@ -1752,7 +1844,7 @@ void getData(char *szMesg, uint16_t len) {
 
     if (pEnd != NULL) {
       while (pStart != pEnd) {
-        if ((*pStart == '%') && isdigit(*(pStart + 1))) {
+        if (*pStart == '%') {
           // replace %xx hex code with the ASCII character
           char c = 0;
           pStart++;
@@ -1846,6 +1938,10 @@ void handleWiFi(void) {
     // Return the response to the client (web page)
     state = S_DISCONN;
     responseWeb();
+    if (chgA1==true) changedAlarm(1);
+    if (chgA2==true) changedAlarm(2);
+    if (sTime==true) _sound(); 
+    if (pac==true) _pacman(); 
     break;
 
   case S_DISCONN:   // close client
@@ -1886,24 +1982,22 @@ void checkAlarm(){
       soundAlarm(alarm_R2);
     }
   }
-  on_txt=false; 
 }
 /////////////////////////////////////////////////////////////////
 void soundAlarm(int n){
+  _scroll=true;
   on_txt=false; 
-  showSimpleClock();
   for (int i = 0; i < n; i++) {
     PRINT("\nAlarm: ", String(i+1) + " of " + String(n));
     sendCmdAll(CMD_INTENSITY,15);
-    GameAudio.PlayWav(&wawTone, false, 1.0);
-    // wait until done
-    while(GameAudio.IsPlaying()){ }
+    GameAudio.PlayWav(&wawTone, false, 1.0); 
+    while(GameAudio.IsPlaying()){ } // wait until done
+
     sendCmdAll(CMD_INTENSITY,0);
     delay(400);
     sendCmdAll(CMD_INTENSITY,15);
-    GameAudio.PlayWav(&wavAlarm, false, 1.0);
-    // wait until done
-    while(GameAudio.IsPlaying()){ }
+    
+    soundTime();
     sendCmdAll(CMD_INTENSITY,0);
     delay(600);
   }
@@ -1912,12 +2006,139 @@ void soundAlarm(int n){
 /////////////////////////////////////////////////////////////////
 void soundEnd(){
   PRINT("\nRestart, repetitions of alarms #1:" , String(alarm_R) + " - 2#:" + String(alarm_R2));
-  sendCmdAll(CMD_INTENSITY,15);
-  GameAudio.PlayWav(&pmDeath, false, 1.0);
-  // wait until done
-  while(GameAudio.IsPlaying()){ }
   sendCmdAll(CMD_INTENSITY,brightness);
+  pacmanEffect();
+  GameAudio.PlayWav(&pmDeath, false, 1.0);
+  display_flash(true); // Flash MATRIX
+
+  UpdateLocalTime();
   clkTime = millis();
+  _scroll=false;
+}
+/////////////////////////////////////////////////////////////////
+void pacmanEffect(){
+  const uint8_t ghost1[6] PROGMEM = {B11111100, B01110110, B11111110, B01110110, B11111100};
+  const uint8_t ghost2[6] PROGMEM = {B01111100, B11110110, B01111110, B11110110, B01111100};
+  const uint8_t pac1[6] PROGMEM = {B10000011, B11000111, B11101101, B01111110, B00111100};
+  const uint8_t pac2[4] PROGMEM = {B00101100, B01111110, B11111011};
+  bool p=false;
+  sTime=false;
+  pac=false;
+
+  GameAudio.PlayWav(&pmEat, false, 1.0);
+  for (int i=0; i<=(NUM_MAX*8)+13; i++) {
+    setCol(i-3,1 ? pac1[3] : 0);
+    setCol(i-4,1 ? pac1[4] : 0);
+    setCol(i-5,1 ? B00000000 : 0);  //Clear last line Pacman
+    setCol(i-14,1 ? B00000000 : 0); //Clear last line Ghost
+    if (p==true){
+      p=false;
+      setCol(i-9,1 ? ghost1[0] : 0); 
+      setCol(i-10,1 ? ghost1[1] : 0);
+      setCol(i-11,1 ? ghost1[2] : 0);
+      setCol(i-12,1 ? ghost1[3] : 0);
+      setCol(i-13,1 ? ghost1[4] : 0);
+      setCol(i,1 ? pac1[0] : 0);
+      setCol(i-1,1 ? pac1[1] : 0);
+      setCol(i-2,1 ? pac1[2] : 0);
+    }else {
+      p=true;
+      setCol(i-9,1 ? ghost2[0] : 0); 
+      setCol(i-10,1 ? ghost2[1] : 0);
+      setCol(i-11,1 ? ghost2[2] : 0);
+      setCol(i-12,1 ? ghost2[3] : 0);
+      setCol(i-13,1 ? ghost2[4] : 0);
+      setCol(i,1 ? pac2[0] : 0);
+      setCol(i-1,1 ? pac2[1] : 0);
+      setCol(i-2,1 ? pac2[2] : 0);
+    }
+    GameAudio.PlayWav(&pmEat, false, 1.0);
+    refreshAll();
+    delay(120);
+  }
+  while(GameAudio.IsPlaying()){ }
+}
+/////////////////////////////////////////////////////////////////
+void soundTime(){
+  _scroll=true;
+  UpdateLocalTime();
+  dots = 1;
+  Oled_Time();
+  showSimpleClock();
+  PRINT("\n>>> SOUND Time: ", CurrentTime);
+  PRINTS("\n");
+  GameAudio.PlayWav(&wawSon, false, 1.0);
+  while(GameAudio.IsPlaying()){ }    // wait until done
+  playWawT(CurrentTime.substring(0,2).toInt());
+  GameAudio.PlayWav(&wawHor, false, 1.0);
+  while(GameAudio.IsPlaying()){ }    // wait until done
+  delay(200);
+  playWawT(CurrentTime.substring(3,5).toInt());
+  GameAudio.PlayWav(&wawMin, false, 1.0);
+  while(GameAudio.IsPlaying()){ }    // wait until done
+}
+/////////////////////////////////////////////////////////////////
+void playWawT(int w){
+  int wH = w/10;
+  if (wH > 0) playWawN(wH);
+  playWawN(w%10);
+}
+/////////////////////////////////////////////////////////////////
+void playWawN(int n){
+  switch(n) {
+    case 0: GameAudio.PlayWav(&waw0, false, 1.0); break;  
+    case 1: GameAudio.PlayWav(&waw1, false, 1.0); break;
+    case 2: GameAudio.PlayWav(&waw2, false, 1.0); break;  
+    case 3: GameAudio.PlayWav(&waw3, false, 1.0); break;  
+    case 4: GameAudio.PlayWav(&waw4, false, 1.0); break;  
+    case 5: GameAudio.PlayWav(&waw5, false, 1.0); break;  
+    case 6: GameAudio.PlayWav(&waw6, false, 1.0); break;  
+    case 7: GameAudio.PlayWav(&waw7, false, 1.0); break;  
+    case 8: GameAudio.PlayWav(&waw8, false, 1.0); break;  
+    case 9: GameAudio.PlayWav(&waw9, false, 1.0); break;
+  }
+  while(GameAudio.IsPlaying()){ }    // wait until done
+}
+/////////////////////////////////////////////////////////////////
+void playIP(){
+  String dg;
+  String mIP = WiFi.localIP().toString();
+  unsigned int carIP = mIP.length();
+  for (int i=0; i<=(carIP-1); i++) {
+    dg = mIP.substring(i,i+1);
+    if (dg==".") {
+      GameAudio.PlayWav(&wawPunto, false, 1.0);
+    }else {
+      playWawN(dg.toInt());
+    }
+    while(GameAudio.IsPlaying()){ }    // wait until done
+  }
+}
+/////////////////////////////////////////////////////////////////
+void changedAlarm(int n) {
+  chgA1=false;
+  chgA2=false;
+  _scroll=true;
+  clrScroll();
+  String msg = "Alarma "; 
+  GameAudio.PlayWav(&wawTone, false, 1.0);
+  if (n==1) {
+    msg = msg + "1>  " + format2(alarm_H) + ":" + format2(alarm_M) + ">" + String(alarm_R); 
+  }else {
+    msg = msg + "2>  " + format2(alarm_H2) + ":" + format2(alarm_M2) + ">" + String(alarm_R2); 
+  }
+  printStringWithShift(msg.c_str(), 35);
+  if (n==1) GameAudio.PlayWav(&waw1, false, 1.0); GameAudio.PlayWav(&waw2, false, 1.0);
+  display_flash(false);
+  delay (3000);
+  clrScroll();
+  _scroll=false;
+}
+/////////////////////////////////////////////////////////////////
+void clrScroll() {
+   clr();
+   refreshAll();
+   clkTime = millis();
 }
 ////////////////////////// END //////////////////////////////////
 /////////////////////////////////////////////////////////////////
